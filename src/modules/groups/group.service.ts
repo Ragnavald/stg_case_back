@@ -221,4 +221,29 @@ export const groupService = {
       })),
     };
   },
+
+  /**
+   * Closes the group. With `settleAll`, the current settlement plan is recorded as
+   * paid first; otherwise every balance must already be zero.
+   */
+  async close(groupId: number, settleAll: boolean) {
+    const group = await requireGroup(groupId);
+    requireOpen(group);
+
+    const ledger = await groupRepository.findLedger(groupId);
+    const balances = computeBalances(ledger);
+    const plan = simplifyDebts(new Map([...balances].map(([id, r]) => [id, r.balance])));
+
+    if (plan.length > 0 && !settleAll) {
+      throw new AppError(`Group still has ${plan.length} pending transfer(s); settle them before closing`, 409);
+    }
+
+    return presentGroup(await groupRepository.close(groupId, plan));
+  },
+
+  async reopen(groupId: number) {
+    const group = await requireGroup(groupId);
+    if (group.status === 'OPEN') throw new AppError('Group is already open', 409);
+    return presentGroup(await groupRepository.reopen(groupId));
+  },
 };

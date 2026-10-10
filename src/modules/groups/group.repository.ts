@@ -1,6 +1,7 @@
 import { prisma } from '../../config/db';
 import type { Prisma } from '../../generated/prisma/client';
 import type { Ledger } from '../../domain/ledger';
+import type { Transfer } from '../../domain/settle';
 
 const withMembers = {
   members: { include: { user: true }, orderBy: [{ joinedAt: 'asc' }, { userId: 'asc' }] },
@@ -67,5 +68,29 @@ export const groupRepository = {
       prisma.settlement.findMany({ where: { groupId }, orderBy: { createdAt: 'asc' } }),
     ]);
     return { expenses, settlements };
+  },
+
+  /** Optionally records the given transfers as settlements, then closes the group, in one transaction. */
+  close(groupId: number, transfers: Transfer[]) {
+    return prisma.$transaction(async (tx) => {
+      if (transfers.length > 0) {
+        await tx.settlement.createMany({
+          data: transfers.map((t) => ({ groupId, fromUserId: t.from, toUserId: t.to, amountMinor: t.amountMinor })),
+        });
+      }
+      return tx.group.update({
+        where: { id: groupId },
+        data: { status: 'CLOSED', closedAt: new Date() },
+        include: withMembers,
+      });
+    });
+  },
+
+  reopen(groupId: number) {
+    return prisma.group.update({
+      where: { id: groupId },
+      data: { status: 'OPEN', closedAt: null },
+      include: withMembers,
+    });
   },
 };

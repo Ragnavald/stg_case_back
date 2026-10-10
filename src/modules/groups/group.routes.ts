@@ -14,6 +14,8 @@ groupRoutes.delete('/:groupId/members/:userId', groupController.removeMember);
 groupRoutes.get('/:groupId/members/:userId/statement', groupController.statement);
 
 groupRoutes.get('/:groupId/balances', groupController.balances);
+groupRoutes.post('/:groupId/close', groupController.close);
+groupRoutes.post('/:groupId/reopen', groupController.reopen);
 
 groupRoutes.use('/:groupId/expenses', expenseRoutes);
 groupRoutes.use('/:groupId/settlements', settlementRoutes);

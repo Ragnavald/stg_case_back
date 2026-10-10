@@ -118,3 +118,22 @@ describe('balances and statement', () => {
     expect(res.body.summary.balance).toBe('0.00');
   });
 });
+
+describe('closing a group', () => {
+  it('POST /groups/:id/close refuses while transfers are pending', async () => {
+    repo.findLedger.mockResolvedValue(chain());
+
+    const res = await request(app).post('/groups/1/close').send({});
+    expect(res.status).toBe(409);
+    expect(repo.close).not.toHaveBeenCalled();
+  });
+
+  it('POST /groups/:id/close with settleAll records the simplified plan in the same call', async () => {
+    repo.findLedger.mockResolvedValue(chain());
+    repo.close.mockResolvedValue(group('CLOSED') as never);
+
+    const res = await request(app).post('/groups/1/close').send({ settleAll: true });
+    expect(res.status).toBe(200);
+    expect(repo.close).toHaveBeenCalledWith(1, [{ from: 1, to: 3, amountMinor: 5000n }]);
+  });
+});

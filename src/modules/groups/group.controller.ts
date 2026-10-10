@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import { parseId } from '../../lib/http';
 import { groupService } from './group.service';
-import { createGroupSchema, memberRefSchema } from './group.schemas';
+import { closeGroupSchema, createGroupSchema, memberRefSchema } from './group.schemas';
 
 type GroupParams = { groupId: string };
 type MemberParams = GroupParams & { userId: string };
@@ -39,5 +39,14 @@ export const groupController = {
     res.json(
       await groupService.statement(parseId(req.params.groupId, 'group id'), parseId(req.params.userId, 'user id')),
     );
+  },
+
+  async close(req: Request<GroupParams>, res: Response) {
+    const { settleAll } = closeGroupSchema.parse(req.body ?? {});
+    res.json(await groupService.close(parseId(req.params.groupId, 'group id'), settleAll));
+  },
+
+  async reopen(req: Request<GroupParams>, res: Response) {
+    res.json(await groupService.reopen(parseId(req.params.groupId, 'group id')));
   },
 };

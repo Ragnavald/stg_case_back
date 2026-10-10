@@ -18,5 +18,12 @@ export const createGroupSchema = z.object({
   members: z.array(memberRefSchema).min(1, 'Add at least one member'),
 });
 
+export const closeGroupSchema = z
+  .object({
+    /** Record every transfer of the current settlement plan before closing. */
+    settleAll: z.boolean().default(false),
+  })
+  .default({ settleAll: false });
+
 export type MemberRef = z.infer<typeof memberRefSchema>;
 export type CreateGroupInput = z.infer<typeof createGroupSchema>;
