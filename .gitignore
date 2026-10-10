@@ -1,0 +1,11 @@
+node_modules
+dist
+
+# Keep environment variables out of version control
+.env
+
+/src/generated/prisma
+
+# Agent skill symlinks (absolute local paths; source lives in .agents/skills)
+.claude/skills
+.windsurf/skills
