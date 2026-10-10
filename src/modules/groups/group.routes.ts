@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { groupController } from './group.controller';
 import { expenseRoutes } from '../expenses/expense.routes';
+import { settlementRoutes } from '../settlements/settlement.routes';
 
 export const groupRoutes = Router();
 
@@ -12,3 +13,4 @@ groupRoutes.post('/:groupId/members', groupController.addMember);
 groupRoutes.delete('/:groupId/members/:userId', groupController.removeMember);
 
 groupRoutes.use('/:groupId/expenses', expenseRoutes);
+groupRoutes.use('/:groupId/settlements', settlementRoutes);
