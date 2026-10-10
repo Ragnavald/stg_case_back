@@ -16,6 +16,7 @@ API para dividir despesas entre pessoas de um grupo, com suporte a despesas lan�
 3. [Modelo de domínio e regras de dinheiro](#3-modelo-de-domínio-e-regras-de-dinheiro)
 4. [Análise de edge cases (rateio e moedas)](#4-análise-de-edge-cases-rateio-e-moedas)
 5. [Proposta de evolução de produto (V2)](#5-proposta-de-evolução-de-produto-v2)
+6. [Plataforma implementada: API e algoritmo de quitação](#6-plataforma-implementada-api-e-algoritmo-de-quitação)
 
 ---
 
@@ -152,7 +153,9 @@ erDiagram
 2. **`SUM(expense_splits.shareMinor) = expense.amountMinor`** para toda despesa, sem exceção.
 3. **Converte primeiro, divide depois.** O total é convertido para a moeda do grupo **uma única vez** e só então rateado, de modo que o arredondamento acontece uma vez e a soma das parcelas fecha.
 4. **A taxa é um snapshot.** A taxa usada é gravada na própria despesa, então saldos passados não mudam quando o câmbio muda.
-5. **Saldos são derivados**, nunca armazenados: `saldo(u) = Σ pagou − Σ deve + Σ recebeu em acertos − Σ pagou em acertos`, tudo em inteiros. Isso garante `Σ saldos do grupo = 0` exatamente.
+5. **Saldos são derivados**, nunca armazenados: `saldo(u) = Σ pagou em despesas − Σ sua parte + Σ acertos enviados − Σ acertos recebidos`, tudo em inteiros (positivo = tem a receber). Quem paga um acerto reduz a própria dívida, por isso o acerto enviado **soma**. Isso garante `Σ saldos do grupo = 0` exatamente.
+
+> **Status do MVP:** cada grupo tem uma moeda (com expoente ISO 4217) e todas as despesas são lançadas nela. Os campos de câmbio (`originalAmountMinor`, `fxRate*`) e a tabela `exchange_rates` do diagrama acima, assim como as seções 4.3 e 4.4, descrevem o desenho da conversão multi-moeda, que ainda não foi implementada.
 
 ---
 
@@ -223,14 +226,16 @@ Resultado: `[3334, 3333, 3333]`, com soma exata de 10000. A diferença máxima e
 
 Três melhorias de negócio, priorizadas por impacto sobre o principal problema do produto: **despesas são registradas, mas dívidas não são quitadas**.
 
-### 5.1 Simplificação de dívidas (mínimo de transferências)
+### 5.1 Simplificação de dívidas (mínimo de transferências) — ✅ entregue no MVP
+
+> Implementada com algoritmo **ótimo** (não apenas guloso); ver [seção 6.2](#62-algoritmo-de-simplificação-de-saldo).
 
 **O que é:** em vez de mostrar "A deve a B, B deve a C, C deve a A", o sistema calcula o **menor conjunto de transferências** que zera todos os saldos. Exemplo: 6 pessoas com 15 dívidas cruzadas passam a precisar de no máximo 5 Pix.
 
 **Impacto no negócio:**
 - Menos atrito para quitar → maior **taxa de liquidação** (métrica norte do produto).
 - Diferencial percebido ("o app resolve a conta para mim"), o que favorece retenção e indicação.
-- **Custo técnico baixo:** os saldos já são derivados em inteiros, e o algoritmo guloso (maior devedor paga ao maior credor) roda em O(n log n) sobre os saldos, sem mudança de schema.
+- **Custo técnico baixo:** os saldos já são derivados em inteiros, então a simplificação roda sobre eles sem mudança de schema.
 
 ### 5.2 Acerto integrado via Pix
 
@@ -259,3 +264,55 @@ Três melhorias de negócio, priorizadas por impacto sobre o principal problema 
 | Nº médio de transferências por grupo para zerar | ↓ com 5.1 |
 | Retenção em 30/90 dias | ↑ com 5.3 |
 | Grupos com ≥ 1 despesa por mês | ↑ com 5.3 |
+
+---
+
+## 6. Plataforma implementada: API e algoritmo de quitação
+
+### 6.1 Funcionalidades
+
+| Requisito | Onde |
+| --- | --- |
+| Grupos com múltiplos integrantes (novas pessoas por nome ou reaproveitando quem já existe) | `modules/groups` |
+| Despesa paga por 1 pessoa e dividida entre N: **igualitário**, **porcentagem**, **valor fixo** e **pesos** | `modules/expenses` + `domain/split.ts` |
+| Cálculo de quem deve a quem com o **mínimo de transferências** | `domain/settle.ts` |
+| Extrato individual (despesa a despesa, com saldo acumulado) e plano de liquidação | `domain/ledger.ts` + `GET /groups/:id/balances`, `.../statement` |
+| Registro de pagamentos e fechamento do grupo (opcionalmente quitando o plano inteiro em uma transação) | `modules/settlements`, `POST /groups/:id/close` |
+
+A regra de negócio fica toda em `src/domain/`, sem dependência de HTTP ou banco, e é testada isoladamente (`npm test`).
+
+### 6.2 Algoritmo de simplificação de saldo
+
+1. **Saldos líquidos:** cada pessoa tem um único número (regra 5 da seção 3). Isso já resolve o exemplo clássico: se A deve 50 a B e B deve 50 a C, o saldo de B é 0, e a única transferência sugerida é **A → C: 50**.
+2. **Mínimo de transferências:** um conjunto de transferências forma um grafo em que cada componente conexo soma zero, e um componente com *k* pessoas precisa de pelo menos *k − 1* transferências. Logo, o mínimo é `n − (máximo de subgrupos disjuntos de soma zero)`.
+3. **Partição exata:** esse máximo é calculado por programação dinâmica sobre bitmasks em O(2ⁿ · n): `dp[mask] = max_i dp[mask \ {i}] + [Σ(mask) = 0]`. Percorrer o argmax a partir do conjunto completo devolve os subgrupos.
+4. **Dentro de cada subgrupo:** o maior devedor paga ao maior credor até zerar, o que dá no máximo *k − 1* transferências por subgrupo.
+5. **Grupos grandes (> 16 pessoas com saldo ≠ 0):** o problema é NP-difícil (generaliza subset-sum), então o algoritmo casa primeiro pares de saldos opostos idênticos e aplica o guloso no restante, mantendo a garantia de no máximo *n − 1* transferências.
+
+Por que não apenas o guloso? Com saldos `{−6, −4, +3, +4, +3}`, o guloso gera 4 transferências, enquanto a partição `{−4, +4}` + `{−6, +3, +3}` resolve com 3. Os testes comparam o resultado contra força bruta em 300 grupos aleatórios.
+
+O painel mostra lado a lado quantos pagamentos seriam necessários **sem simplificação** (cada participante paga de volta a cada pagador, compensando apenas dentro do mesmo par) e **com simplificação**, ambos calculados sobre as mesmas despesas.
+
+### 6.3 Endpoints
+
+Valores monetários trafegam como **string decimal** na moeda do grupo (`"100.00"`).
+
+| Método | Rota | Descrição |
+| --- | --- | --- |
+| `GET` | `/currencies` | Moedas suportadas e seus expoentes |
+| `GET` / `POST` | `/users` | Pessoas |
+| `GET` | `/groups` | Lista de grupos com total gasto |
+| `POST` | `/groups` | `{ name, currency?, members: [{ userId } \| { name }] }` |
+| `GET` | `/groups/:id` | Grupo e integrantes |
+| `POST` | `/groups/:id/members` | `{ userId } \| { name }` |
+| `DELETE` | `/groups/:id/members/:userId` | `409` se o saldo da pessoa ≠ 0 |
+| `GET` / `POST` | `/groups/:id/expenses` | `{ description, amount, payerId, date?, splitType, participants: [{ userId, value? }] }` |
+| `DELETE` | `/groups/:id/expenses/:expenseId` | Exclui a despesa |
+| `GET` / `POST` | `/groups/:id/settlements` | `{ fromUserId, toUserId, amount }` registra um pagamento |
+| `DELETE` | `/groups/:id/settlements/:settlementId` | Desfaz um pagamento |
+| `GET` | `/groups/:id/balances` | Saldos, plano de quitação e comparação sem/com simplificação |
+| `GET` | `/groups/:id/members/:userId/statement` | Extrato individual com saldo acumulado |
+| `POST` | `/groups/:id/close` | `{ settleAll?: boolean }`; sem `settleAll`, exige saldos zerados (`409`) |
+| `POST` | `/groups/:id/reopen` | Reabre um grupo fechado |
+
+`value` depende do `splitType`: ignorado em `EQUAL`; percentual em `PERCENT` (até 4 casas, soma exatamente 100); peso em `SHARES`; valor na moeda em `EXACT` (soma = total). Grupos fechados recusam alterações com `409`.
