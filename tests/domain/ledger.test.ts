@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildStatement, computeBalances, countPairwiseDebts, type Ledger } from '../../src/domain/ledger';
+import { simplifyDebts } from '../../src/domain/settle';
 
 const day = (d: string) => new Date(`${d}T00:00:00Z`);
 
@@ -44,9 +45,11 @@ describe('computeBalances', () => {
   });
 });
 
-describe('countPairwiseDebts', () => {
-  it('counts one debt per pair of people that still owe each other', () => {
+describe('countPairwiseDebts vs simplifyDebts', () => {
+  it('needs 2 transfers pairwise but only 1 after simplification', () => {
     expect(countPairwiseDebts(chain)).toBe(2);
+    const balances = new Map([...computeBalances(chain)].map(([id, r]) => [id, r.balance]));
+    expect(simplifyDebts(balances)).toEqual([{ from: 3, to: 1, amountMinor: 5000n }]);
   });
 });
 
