@@ -1,6 +1,8 @@
 import { AppError } from '../../middlewares/errorHandler';
 import { currencyExponent, formatMoney } from '../../domain/money';
-import { computeBalances } from '../../domain/ledger';
+import { buildStatement, computeBalances, countPairwiseDebts, type Ledger } from '../../domain/ledger';
+import { simplifyDebts } from '../../domain/settle';
+import { toDateOnly } from '../../lib/http';
 import { userRepository } from '../users/user.repository';
 import { groupRepository, type GroupWithMembers } from './group.repository';
 import type { CreateGroupInput, MemberRef } from './group.schemas';
@@ -39,6 +41,68 @@ function presentGroup(group: GroupWithMembers) {
     closedAt: group.closedAt,
     members: group.members.map((m) => ({ id: m.user.id, name: m.user.name })),
   };
+}
+
+/** Everything the settlement panel needs, derived from the ledger in one pass. */
+function summarize(group: GroupWithMembers, ledger: Ledger, names: Map<number, string>) {
+  const exp = currencyExponent(group.currency);
+  const money = (v: bigint) => formatMoney(v, exp);
+  const memberIds = group.members.map((m) => m.userId);
+  const memberSet = new Set(memberIds);
+
+  const breakdown = computeBalances(ledger, memberIds);
+  const plan = simplifyDebts(new Map([...breakdown].map(([id, row]) => [id, row.balance])));
+  const person = (id: number) => ({ id, name: names.get(id) ?? `#${id}` });
+
+  const totalSpent = ledger.expenses.reduce((acc, e) => acc + e.amountMinor, 0n);
+
+  // "Without vs with simplification" is measured on expenses alone: payments made by
+  // following the simplified plan do not cancel pair-by-pair, so including them would
+  // leave phantom pairwise debts in an already settled group.
+  const expensesOnly: Ledger = { expenses: ledger.expenses, settlements: [] };
+  const expenseBalances = computeBalances(expensesOnly);
+  const simplifiedFromExpenses = simplifyDebts(new Map([...expenseBalances].map(([id, r]) => [id, r.balance])));
+
+  return {
+    currency: group.currency,
+    status: group.status,
+    totalSpent: money(totalSpent),
+    isSettled: plan.length === 0,
+    balances: [...breakdown]
+      // former members only show up while they still have something to settle
+      .filter(([id, row]) => memberSet.has(id) || row.balance !== 0n)
+      .map(([id, row]) => ({
+        user: person(id),
+        isMember: memberSet.has(id),
+        paid: money(row.paid),
+        owed: money(row.owed),
+        settlementsSent: money(row.sent),
+        settlementsReceived: money(row.received),
+        balance: money(row.balance),
+      }))
+      .sort((a, b) => a.user.name.localeCompare(b.user.name)),
+    plan: plan.map((t) => ({ from: person(t.from), to: person(t.to), amount: money(t.amountMinor) })),
+    stats: {
+      pairwiseTransfers: countPairwiseDebts(expensesOnly),
+      simplifiedTransfers: simplifiedFromExpenses.length,
+    },
+  };
+}
+
+/** Names for everyone who appears in the ledger, including former members. */
+async function namesFor(group: GroupWithMembers, ledger: Ledger) {
+  const names = new Map(group.members.map((m) => [m.userId, m.user.name]));
+  const ids = new Set<number>();
+  for (const e of ledger.expenses) {
+    ids.add(e.payerId);
+    for (const s of e.splits) ids.add(s.userId);
+  }
+  for (const s of ledger.settlements) ids.add(s.fromUserId).add(s.toUserId);
+  const missing = [...ids].filter((id) => !names.has(id));
+  if (missing.length > 0) {
+    for (const u of await userRepository.findByIds(missing)) names.set(u.id, u.name);
+  }
+  return names;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,5 +179,46 @@ export const groupService = {
 
     await groupRepository.removeMember(groupId, userId);
     return presentGroup(await requireGroup(groupId));
+  },
+
+  async balances(groupId: number) {
+    const group = await requireGroup(groupId);
+    const ledger = await groupRepository.findLedger(groupId);
+    return summarize(group, ledger, await namesFor(group, ledger));
+  },
+
+  async statement(groupId: number, userId: number) {
+    const group = await requireGroup(groupId);
+    const ledger = await groupRepository.findLedger(groupId);
+    const names = await namesFor(group, ledger);
+    if (!names.has(userId)) throw new AppError('User has no activity in this group', 404);
+
+    const exp = currencyExponent(group.currency);
+    const money = (v: bigint) => formatMoney(v, exp);
+    const row = computeBalances(ledger, [userId]).get(userId)!;
+
+    return {
+      user: { id: userId, name: names.get(userId)! },
+      currency: group.currency,
+      summary: {
+        paid: money(row.paid),
+        owed: money(row.owed),
+        settlementsSent: money(row.sent),
+        settlementsReceived: money(row.received),
+        balance: money(row.balance),
+      },
+      entries: buildStatement(ledger, userId).map((e) => ({
+        type: e.type,
+        refId: e.refId,
+        // expenses carry a calendar day; settlements a full timestamp the client renders in local time
+        date: e.type === 'EXPENSE' ? toDateOnly(e.date) : e.date.toISOString(),
+        description: e.description,
+        counterpart: e.counterpartId === null ? null : { id: e.counterpartId, name: names.get(e.counterpartId) ?? '' },
+        paid: money(e.paidMinor),
+        share: money(e.shareMinor),
+        effect: money(e.effectMinor),
+        runningBalance: money(e.runningBalanceMinor),
+      })),
+    };
   },
 };

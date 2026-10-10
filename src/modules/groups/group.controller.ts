@@ -30,4 +30,14 @@ export const groupController = {
       await groupService.removeMember(parseId(req.params.groupId, 'group id'), parseId(req.params.userId, 'user id')),
     );
   },
+
+  async balances(req: Request<GroupParams>, res: Response) {
+    res.json(await groupService.balances(parseId(req.params.groupId, 'group id')));
+  },
+
+  async statement(req: Request<MemberParams>, res: Response) {
+    res.json(
+      await groupService.statement(parseId(req.params.groupId, 'group id'), parseId(req.params.userId, 'user id')),
+    );
+  },
 };

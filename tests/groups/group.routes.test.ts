@@ -81,3 +81,40 @@ describe('groups and members', () => {
     expect(res.body.error).toMatch(/owes BRL 10.00/);
   });
 });
+
+// Bruno paid 50 for Ana and Caio paid 50 for Bruno: Ana → Bruno → Caio
+const chain = () => {
+  const d = new Date('2026-10-01T00:00:00Z');
+  return {
+    expenses: [
+      { id: 1, description: 'x', date: d, createdAt: d, payerId: 2, amountMinor: 5000n, splits: [{ userId: 1, shareMinor: 5000n }] },
+      { id: 2, description: 'y', date: d, createdAt: d, payerId: 3, amountMinor: 5000n, splits: [{ userId: 2, shareMinor: 5000n }] },
+    ],
+    settlements: [],
+  };
+};
+
+describe('balances and statement', () => {
+  it('GET /groups/:id/balances collapses the A→B→C chain into A→C', async () => {
+    repo.findLedger.mockResolvedValue(chain());
+
+    const res = await request(app).get('/groups/1/balances');
+    expect(res.status).toBe(200);
+    expect(res.body.plan).toEqual([{ from: { id: 1, name: 'Ana' }, to: { id: 3, name: 'Caio' }, amount: '50.00' }]);
+    expect(res.body.stats).toEqual({ pairwiseTransfers: 2, simplifiedTransfers: 1 });
+    expect(res.body.isSettled).toBe(false);
+  });
+
+  it('GET /groups/:id/members/:userId/statement lists movements with a running balance', async () => {
+    repo.findLedger.mockResolvedValue(chain());
+
+    const res = await request(app).get('/groups/1/members/2/statement');
+    expect(res.status).toBe(200);
+    type Entry = { description: string; effect: string; runningBalance: string };
+    expect(res.body.entries.map((e: Entry) => [e.description, e.effect, e.runningBalance])).toEqual([
+      ['x', '50.00', '50.00'],
+      ['y', '-50.00', '0.00'],
+    ]);
+    expect(res.body.summary.balance).toBe('0.00');
+  });
+});
