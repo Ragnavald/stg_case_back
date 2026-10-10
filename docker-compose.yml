@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:13
+    container_name: stg_case_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: stg_user
+      POSTGRES_PASSWORD: stg_password
+      POSTGRES_DB: stg_case
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+volumes:
+  pg_data:
