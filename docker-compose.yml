@@ -1,3 +1,7 @@
+# Fixed project name: the container and volume keep the same identity whichever
+# directory `docker compose` runs from (otherwise container_name collides).
+name: stg_case
+
 services:
   db:
     image: postgres:13

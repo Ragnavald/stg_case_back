@@ -7,9 +7,105 @@ datasource db {
   provider = "postgresql"
 }
 
+enum GroupStatus {
+  OPEN
+  CLOSED
+}
+
+enum SplitType {
+  EQUAL
+  PERCENT
+  SHARES
+  EXACT
+}
+
 model User {
   id   Int    @id @default(autoincrement())
   name String
 
+  memberships      GroupMember[]
+  paidExpenses     Expense[]      @relation("ExpensePayer")
+  splits           ExpenseSplit[]
+  sentPayments     Settlement[]   @relation("SettlementFrom")
+  receivedPayments Settlement[]   @relation("SettlementTo")
+
   @@map("users")
+}
+
+model Group {
+  id        Int         @id @default(autoincrement())
+  name      String
+  /// ISO 4217 code; amounts in this group are stored in this currency's minor unit
+  currency  String      @default("BRL") @db.Char(3)
+  status    GroupStatus @default(OPEN)
+  createdAt DateTime    @default(now()) @map("created_at")
+  closedAt  DateTime?   @map("closed_at")
+
+  members     GroupMember[]
+  expenses    Expense[]
+  settlements Settlement[]
+
+  @@map("groups")
+}
+
+model GroupMember {
+  groupId  Int      @map("group_id")
+  userId   Int      @map("user_id")
+  joinedAt DateTime @default(now()) @map("joined_at")
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@id([groupId, userId])
+  @@map("group_members")
+}
+
+model Expense {
+  id          Int       @id @default(autoincrement())
+  groupId     Int       @map("group_id")
+  payerId     Int       @map("payer_id")
+  description String
+  /// Total in the group currency's minor unit (e.g. cents)
+  amountMinor BigInt    @map("amount_minor")
+  splitType   SplitType @map("split_type")
+  date        DateTime  @db.Date
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  group  Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  payer  User           @relation("ExpensePayer", fields: [payerId], references: [id])
+  splits ExpenseSplit[]
+
+  @@index([groupId])
+  @@map("expenses")
+}
+
+model ExpenseSplit {
+  expenseId  Int     @map("expense_id")
+  userId     Int     @map("user_id")
+  /// Share owed by this user, in the group currency's minor unit
+  shareMinor BigInt  @map("share_minor")
+  /// Raw input that produced the share (percent, weight or exact amount), kept for display/audit
+  input      String?
+
+  expense Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@id([expenseId, userId])
+  @@map("expense_splits")
+}
+
+model Settlement {
+  id          Int      @id @default(autoincrement())
+  groupId     Int      @map("group_id")
+  fromUserId  Int      @map("from_user_id")
+  toUserId    Int      @map("to_user_id")
+  amountMinor BigInt   @map("amount_minor")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  from  User  @relation("SettlementFrom", fields: [fromUserId], references: [id])
+  to    User  @relation("SettlementTo", fields: [toUserId], references: [id])
+
+  @@index([groupId])
+  @@map("settlements")
 }

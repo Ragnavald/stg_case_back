@@ -10,6 +10,10 @@ export const userRepository = {
     return prisma.user.findUnique({ where: { id } });
   },
 
+  findByIds(ids: number[]): Promise<User[]> {
+    return prisma.user.findMany({ where: { id: { in: ids } } });
+  },
+
   create(data: CreateUserDTO): Promise<User> {
     return prisma.user.create({ data: { name: data.name } });
   },
