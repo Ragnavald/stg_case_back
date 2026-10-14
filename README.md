@@ -17,6 +17,7 @@ API para dividir despesas entre pessoas de um grupo, com suporte a despesas lan�
 4. [Análise de edge cases (rateio e moedas)](#4-análise-de-edge-cases-rateio-e-moedas)
 5. [Proposta de evolução de produto (V2)](#5-proposta-de-evolução-de-produto-v2)
 6. [Plataforma implementada: API e algoritmo de quitação](#6-plataforma-implementada-api-e-algoritmo-de-quitação)
+7. [Estrutura do código](#7-estrutura-do-código)
 
 ---
 
@@ -316,3 +317,67 @@ Valores monetários trafegam como **string decimal** na moeda do grupo (`"100.00
 | `POST` | `/groups/:id/reopen` | Reabre um grupo fechado |
 
 `value` depende do `splitType`: ignorado em `EQUAL`; percentual em `PERCENT` (até 4 casas, soma exatamente 100); peso em `SHARES`; valor na moeda em `EXACT` (soma = total). Grupos fechados recusam alterações com `409`.
+
+---
+
+## 7. Estrutura do código
+
+Uma requisição percorre as camadas sempre na mesma ordem, e a regra de negócio fica isolada em `domain/`:
+
+```
+routes → controller → service → repository → Prisma / PostgreSQL
+                         │
+                         └──► domain/  (cálculos puros: sem HTTP, sem banco)
+```
+
+### 7.1 Raiz de `src/`
+
+| Arquivo / pasta | O que faz |
+| --- | --- |
+| `index.ts` | Ponto de entrada: carrega o `.env` e sobe o servidor na `PORT` (padrão 3001) |
+| `app.ts` | Monta o Express: CORS, parser de JSON, rotas e o tratador de erros no final |
+| `routes.ts` | Roteador raiz: `/health`, `/currencies` e os módulos `/users` e `/groups` |
+| `config/db.ts` | Cria o `PrismaClient` único da aplicação, conectado via `@prisma/adapter-pg` |
+| `lib/http.ts` | Utilitários HTTP: `parseId` (valida ids de rota e responde `400` em vez de deixar `NaN` chegar ao banco) e `toDateOnly` (data em `YYYY-MM-DD`) |
+| `middlewares/errorHandler.ts` | Classe `AppError` (erro de negócio com status HTTP) e o middleware que converte `AppError`, erros do Zod e JSON malformado em respostas `4xx`; qualquer outro erro vira `500` |
+| `generated/prisma/` | Client tipado gerado pelo `prisma generate` a partir de `prisma/schema.prisma`. **Não editar à mão** |
+
+### 7.2 `domain/`: regra de negócio pura
+
+| Arquivo | O que faz |
+| --- | --- |
+| `money.ts` | Dinheiro como inteiro (`bigint`) na unidade mínima da moeda. Tabela de expoentes ISO 4217, parse de `"100.50"` para inteiro sem `parseFloat` e formatação de volta para string |
+| `split.ts` | Rateio de uma despesa nos modos `EQUAL`, `PERCENT`, `SHARES` e `EXACT`, usando o método do maior resto. As parcelas sempre somam exatamente o total |
+| `ledger.ts` | Saldos derivados de despesas e acertos (`pagou − deve + enviou − recebeu`), extrato individual com saldo acumulado e contagem de dívidas sem simplificação |
+| `settle.ts` | Simplificação de dívidas: menor número de transferências que zera o grupo. Usa programação dinâmica exata até 16 pessoas e um algoritmo guloso acima disso (seção 6.2) |
+
+### 7.3 `modules/`: um módulo por recurso da API
+
+Todos os módulos seguem o mesmo padrão de arquivos:
+
+| Sufixo | Camada | Responsabilidade |
+| --- | --- | --- |
+| `*.routes.ts` | Rotas | Associa método + URL ao controller |
+| `*.controller.ts` | HTTP | Lê `params` e `body`, valida com o schema, chama o service e devolve o status HTTP |
+| `*.schemas.ts` | Validação | Schemas Zod do corpo das requisições (formato e tipos) |
+| `*.service.ts` | Aplicação | Regras do caso de uso: verifica se o grupo existe e está aberto, se os participantes são membros, chama `domain/` e formata a resposta |
+| `*.repository.ts` | Dados | Única camada que fala com o Prisma (consultas e transações) |
+
+| Módulo | Rotas | O que cobre |
+| --- | --- | --- |
+| `users/` | `/users` | Cadastro e listagem de pessoas. Usa `user.types.ts` (interfaces) no lugar de schemas Zod |
+| `groups/` | `/groups` | Grupos e membros, saldos e plano de quitação, extrato individual, fechar e reabrir grupo. Exporta `requireGroup`, `requireOpen` e `requireMembers`, reaproveitados pelos outros módulos |
+| `expenses/` | `/groups/:groupId/expenses` | Lançar, listar e excluir despesas, calculando as parcelas com `domain/split.ts` |
+| `settlements/` | `/groups/:groupId/settlements` | Registrar, listar e desfazer pagamentos entre membros |
+
+### 7.4 Fora de `src/`
+
+| Pasta / arquivo | O que faz |
+| --- | --- |
+| `prisma/schema.prisma` | Modelo de dados (tabelas, relações, tipos) |
+| `prisma/migrations/` | Migrations SQL versionadas, aplicadas com `npm run db:migrate` |
+| `tests/domain/` | Testes unitários das funções de `domain/`, sem HTTP e sem banco |
+| `tests/<módulo>/` | Testes de rota com Supertest por módulo (`users/` também testa o service) |
+| `tests/*.test.ts`, `tests/lib/` | Testes do `/health`, do tratador de erros e de `lib/http.ts` |
+| `docker-compose.yml` | PostgreSQL local para desenvolvimento |
+| `dist/` | Saída do `npm run build` (gerada, não editar) |
